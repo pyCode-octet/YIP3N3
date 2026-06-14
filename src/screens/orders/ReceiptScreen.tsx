@@ -1,11 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
 import { Order } from '../../lib/supabase';
 import { BrandLogo } from '../../components/BrandLogo';
+import { exportReceiptPdf, printReceipt } from '../../lib/pdf';
 
 function formatDateTime(iso: string) {
   const d = new Date(iso);
@@ -26,6 +27,22 @@ function Dashes() {
 
 export function ReceiptScreen({ navigation, route }: any) {
   const { order } = route.params as { order: Order };
+  const [sharing, setSharing] = useState(false);
+  const [printing, setPrinting] = useState(false);
+
+  const handleShare = async () => {
+    setSharing(true);
+    try { await exportReceiptPdf(order); }
+    catch { Alert.alert('Erreur', 'Impossible d\'exporter le reçu.'); }
+    finally { setSharing(false); }
+  };
+
+  const handlePrint = async () => {
+    setPrinting(true);
+    try { await printReceipt(order); }
+    catch { Alert.alert('Erreur', 'Impossible d\'imprimer.'); }
+    finally { setPrinting(false); }
+  };
 
   return (
     <View style={styles.container}>
@@ -117,17 +134,17 @@ export function ReceiptScreen({ navigation, route }: any) {
 
       {/* Action buttons */}
       <View style={styles.footer}>
-        <TouchableOpacity style={[styles.actionBtn, styles.actionBtnWhatsapp]} activeOpacity={0.85}>
+        <TouchableOpacity style={[styles.actionBtn, styles.actionBtnWhatsapp, sharing && { opacity: 0.6 }]} onPress={handleShare} disabled={sharing} activeOpacity={0.85}>
           <Ionicons name="logo-whatsapp" size={18} color={Colors.textOnDark} />
-          <Text style={[styles.actionBtnText, { color: Colors.textOnDark }]}>Partager</Text>
+          <Text style={[styles.actionBtnText, { color: Colors.textOnDark }]}>{sharing ? '...' : 'Partager'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.actionBtn} activeOpacity={0.85}>
+        <TouchableOpacity style={[styles.actionBtn, sharing && { opacity: 0.6 }]} onPress={handleShare} disabled={sharing} activeOpacity={0.85}>
           <Ionicons name="document-outline" size={18} color={Colors.textPrimary} />
           <Text style={styles.actionBtnText}>PDF</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.actionBtn} activeOpacity={0.85}>
+        <TouchableOpacity style={[styles.actionBtn, printing && { opacity: 0.6 }]} onPress={handlePrint} disabled={printing} activeOpacity={0.85}>
           <Ionicons name="print-outline" size={18} color={Colors.textPrimary} />
-          <Text style={styles.actionBtnText}>Imprimer</Text>
+          <Text style={styles.actionBtnText}>{printing ? '...' : 'Imprimer'}</Text>
         </TouchableOpacity>
       </View>
     </View>

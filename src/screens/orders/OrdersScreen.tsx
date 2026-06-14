@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Colors } from '../../theme/colors';
 import { OrderCard } from '../../components/OrderCard';
-import { mockOrders } from '../../lib/mockData';
+import { fetchOrders } from '../../lib/api';
+import { Order } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
 
 type Tab = 'en_cours' | 'terminee';
@@ -10,30 +12,36 @@ type Tab = 'en_cours' | 'terminee';
 export function OrdersScreen({ navigation }: any) {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>('en_cours');
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const filtered = mockOrders.filter(o => {
-    const statusMatch = o.status === tab;
-    if (user?.role === 'patron') return statusMatch;
-    return statusMatch && o.server_id === user?.id;
-  });
+  const loadOrders = async () => {
+    try {
+      const data = await fetchOrders();
+      setOrders(data);
+    } catch {}
+  };
 
-  const enCoursCount = mockOrders.filter(o =>
-    user?.role === 'patron' ? o.status === 'en_cours' : o.status === 'en_cours' && o.server_id === user?.id
-  ).length;
-  const termineeCount = mockOrders.filter(o =>
-    user?.role === 'patron' ? o.status === 'terminee' : o.status === 'terminee' && o.server_id === user?.id
-  ).length;
+  useFocusEffect(useCallback(() => { loadOrders(); }, []));
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadOrders();
+    setRefreshing(false);
+  };
+
+  const filtered = orders.filter(o => o.status === tab);
+  const enCoursCount  = orders.filter(o => o.status === 'en_cours').length;
+  const termineeCount = orders.filter(o => o.status === 'terminee').length;
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>
           {tab === 'en_cours' ? 'Commandes en cours' : 'Commandes terminées'}
         </Text>
       </View>
 
-      {/* Tabs */}
       <View style={styles.tabs}>
         <TouchableOpacity
           style={[styles.tab, tab === 'en_cours' && styles.tabActive]}
@@ -59,7 +67,11 @@ export function OrdersScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+      >
         {filtered.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyText}>

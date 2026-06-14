@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert } from 'reac
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
 import { Button } from '../../components/Button';
+import { addPrice } from '../../lib/api';
 
 export function AddPriceScreen({ navigation }: any) {
   const [amount, setAmount] = useState('');
@@ -12,11 +13,16 @@ export function AddPriceScreen({ navigation }: any) {
     const val = parseInt(amount, 10);
     if (!val || val <= 0) { Alert.alert('Erreur', 'Saisis un montant valide.'); return; }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 600));
-    setLoading(false);
-    Alert.alert('Succès', `Prix de ${val.toLocaleString('fr-FR')} FCFA ajouté.`, [
-      { text: 'OK', onPress: () => navigation.goBack() },
-    ]);
+    try {
+      await addPrice(val, '');
+      Alert.alert('Succès', `Prix de ${val.toLocaleString('fr-FR')} FCFA ajouté.`, [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch {
+      Alert.alert('Erreur', 'Impossible d\'ajouter le prix. Réessaie.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

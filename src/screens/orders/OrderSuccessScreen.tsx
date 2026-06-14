@@ -42,9 +42,12 @@ export function OrderSuccessScreen({ navigation, route }: any) {
             style={styles.btn}
           />
           <Button
-            label="Retour aux commandes"
+            label="Retour au Dashboard"
             variant="secondary"
-            onPress={() => navigation.navigate('Orders')}
+            onPress={() => navigation.reset({
+              index: 0,
+              routes: [{ name: 'Tabs', params: { screen: 'Dashboard' } }],
+            })}
             style={styles.btn}
           />
         </View>

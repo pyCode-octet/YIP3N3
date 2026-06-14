@@ -1,22 +1,42 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
-import { mockOrders, mockPrices } from '../../lib/mockData';
+import { FishPrice, Order } from '../../lib/supabase';
+import { fetchTerminatedOrdersByRange, fetchPrices, getDateRange } from '../../lib/api';
 
 const MEDALS = ['🥇', '🥈', '🥉'];
 
-export function ReportPriceRankingScreen({ navigation }: any) {
-  const terminated = mockOrders.filter(o => o.status === 'terminee');
+type RankedPrice = { price: FishPrice; qty: number; revenue: number };
 
-  const ranking = mockPrices.map(price => {
-    const items = terminated.flatMap(o => o.items ?? []).filter(i => i.unit_price === price.amount);
-    const qty = items.reduce((s, i) => s + i.quantity, 0);
-    const revenue = qty * price.amount;
-    return { price, qty, revenue };
-  }).sort((a, b) => b.qty - a.qty);
+export function ReportPriceRankingScreen({ navigation, route }: any) {
+  const { period, startDate, endDate } = route.params as { period: string; startDate?: string; endDate?: string };
+
+  const [loading, setLoading] = useState(true);
+  const [ranking, setRanking] = useState<RankedPrice[]>([]);
+
+  useEffect(() => {
+    const range = startDate && endDate
+      ? { start: new Date(startDate), end: new Date(endDate) }
+      : getDateRange(period);
+
+    Promise.all([
+      fetchTerminatedOrdersByRange(range.start, range.end),
+      fetchPrices(),
+    ]).then(([orders, prices]: [Order[], FishPrice[]]) => {
+      const result = prices.map(price => {
+        const items = orders.flatMap(o => o.items ?? []).filter(i => i.unit_price === price.amount);
+        const qty = items.reduce((s, i) => s + i.quantity, 0);
+        const revenue = items.reduce((s, i) => s + i.line_total, 0);
+        return { price, qty, revenue };
+      }).sort((a, b) => b.qty - a.qty);
+      setRanking(result);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
 
   const maxQty = Math.max(...ranking.map(r => r.qty), 1);
+  const totalRevenue = ranking.reduce((s, r) => s + r.revenue, 0);
+  const totalQty = ranking.reduce((s, r) => s + r.qty, 0);
 
   return (
     <View style={styles.container}>
@@ -28,40 +48,41 @@ export function ReportPriceRankingScreen({ navigation }: any) {
         <View style={{ width: 22 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.subtitle}>Poissons les plus vendus par tarif</Text>
-
-        {ranking.map((item, index) => (
-          <View key={item.price.id} style={[styles.rankCard, index === 0 && styles.rankCardFirst]}>
-            <Text style={styles.medal}>{MEDALS[index] ?? `${index + 1}.`}</Text>
-            <View style={styles.rankInfo}>
-              <Text style={styles.rankPrice}>{item.price.amount.toLocaleString('fr-FR')} FCFA</Text>
-              <View style={styles.barContainer}>
-                <View style={[styles.bar, {
-                  width: `${(item.qty / maxQty) * 100}%`,
-                  backgroundColor: index === 0 ? Colors.accent : index === 1 ? Colors.primary : Colors.textSecondary,
-                }]} />
-              </View>
-              <Text style={styles.rankRevenue}>{item.revenue.toLocaleString('fr-FR')} FCFA générés</Text>
-            </View>
-            <View style={styles.rankCount}>
-              <Text style={styles.rankQty}>{item.qty}</Text>
-              <Text style={styles.rankQtyLabel}>vendus</Text>
-            </View>
-          </View>
-        ))}
-
-        {/* Summary */}
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryTitle}>Total général</Text>
-          <Text style={styles.summaryValue}>
-            {ranking.reduce((s, r) => s + r.revenue, 0).toLocaleString('fr-FR')} FCFA
-          </Text>
-          <Text style={styles.summaryLabel}>
-            {ranking.reduce((s, r) => s + r.qty, 0)} poissons vendus au total
-          </Text>
+      {loading ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator color={Colors.primary} />
         </View>
-      </ScrollView>
+      ) : (
+        <ScrollView contentContainerStyle={styles.content}>
+          <Text style={styles.subtitle}>Poissons les plus vendus par tarif</Text>
+
+          {ranking.map((item, index) => (
+            <View key={item.price.id} style={[styles.rankCard, index === 0 && styles.rankCardFirst]}>
+              <Text style={styles.medal}>{MEDALS[index] ?? `${index + 1}.`}</Text>
+              <View style={styles.rankInfo}>
+                <Text style={styles.rankPrice}>{item.price.amount.toLocaleString('fr-FR')} FCFA</Text>
+                <View style={styles.barContainer}>
+                  <View style={[styles.bar, {
+                    width: `${(item.qty / maxQty) * 100}%`,
+                    backgroundColor: index === 0 ? Colors.accent : index === 1 ? Colors.primary : Colors.textSecondary,
+                  }]} />
+                </View>
+                <Text style={styles.rankRevenue}>{item.revenue.toLocaleString('fr-FR')} FCFA générés</Text>
+              </View>
+              <View style={styles.rankCount}>
+                <Text style={styles.rankQty}>{item.qty}</Text>
+                <Text style={styles.rankQtyLabel}>vendus</Text>
+              </View>
+            </View>
+          ))}
+
+          <View style={styles.summaryCard}>
+            <Text style={styles.summaryTitle}>Total général</Text>
+            <Text style={styles.summaryValue}>{totalRevenue.toLocaleString('fr-FR')} FCFA</Text>
+            <Text style={styles.summaryLabel}>{totalQty} poissons vendus au total</Text>
+          </View>
+        </ScrollView>
+      )}
     </View>
   );
 }

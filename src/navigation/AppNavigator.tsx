@@ -8,7 +8,9 @@ import { MainNavigator } from './MainNavigator';
 const Stack = createNativeStackNavigator();
 
 export function AppNavigator() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+
+  if (loading) return null;
 
   return (
     <NavigationContainer>

@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
 import { Button } from '../../components/Button';
 import { FishPrice } from '../../lib/supabase';
+import { deactivatePrice } from '../../lib/api';
 
 export function DeactivatePriceScreen({ navigation, route }: any) {
   const { price } = route.params as { price: FishPrice };
@@ -11,11 +12,16 @@ export function DeactivatePriceScreen({ navigation, route }: any) {
 
   const handleDeactivate = async () => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 700));
-    setLoading(false);
-    Alert.alert('Prix désactivé', `Le prix de ${price.amount.toLocaleString('fr-FR')} FCFA a été désactivé. L'historique des commandes est conservé.`, [
-      { text: 'OK', onPress: () => navigation.navigate('PriceList') },
-    ]);
+    try {
+      await deactivatePrice(price.id);
+      Alert.alert('Prix désactivé', `Le prix de ${price.amount.toLocaleString('fr-FR')} FCFA a été désactivé. L'historique des commandes est conservé.`, [
+        { text: 'OK', onPress: () => navigation.navigate('PriceList') },
+      ]);
+    } catch {
+      Alert.alert('Erreur', 'Impossible de désactiver le prix. Réessaie.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

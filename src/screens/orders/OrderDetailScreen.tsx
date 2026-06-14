@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
 import { Order } from '../../lib/supabase';
+import { markOrderTerminated } from '../../lib/api';
 
 function formatDateTime(iso: string) {
   return new Date(iso).toLocaleString('fr-FR', {
@@ -16,13 +17,19 @@ function formatDateTime(iso: string) {
 export function OrderDetailScreen({ navigation, route }: any) {
   const { order } = route.params as { order: Order };
   const [loading, setLoading] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
   const isEnCours = order.status === 'en_cours';
 
   const handleMarkDone = async () => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 600));
-    setLoading(false);
-    navigation.navigate('OrderSuccess', { order: { ...order, status: 'terminee' } });
+    try {
+      await markOrderTerminated(order.id);
+      setShowSuccess(true);
+    } catch {
+      Alert.alert('Erreur', 'Impossible de terminer la commande.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -82,6 +89,39 @@ export function OrderDetailScreen({ navigation, route }: any) {
           </View>
         </View>
       </ScrollView>
+
+      {/* Success modal */}
+      <Modal visible={showSuccess} transparent animationType="fade">
+        <View style={styles.successOverlay}>
+          <View style={styles.successCard}>
+            <View style={styles.successIcon}>
+              <Ionicons name="checkmark" size={44} color={Colors.textOnDark} />
+            </View>
+            <Text style={styles.successTitle}>Commande terminée !</Text>
+            <Text style={styles.successRef}>{order.reference}</Text>
+            <Text style={styles.successTotal}>{order.total_amount.toLocaleString('fr-FR')} FCFA</Text>
+            <TouchableOpacity
+              style={styles.successBtnPrimary}
+              onPress={() => { 
+                setShowSuccess(false); 
+                navigation.navigate('Receipt', { order: { ...order, status: 'terminee' } }); 
+              }}
+            >
+              <Ionicons name="document-text-outline" size={17} color={Colors.textOnDark} />
+              <Text style={styles.successBtnPrimaryText}>Voir le reçu</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.successBtnSecondary}
+              onPress={() => { 
+                setShowSuccess(false); 
+                navigation.navigate('Tabs', { screen: 'Orders' });
+              }}
+            >
+              <Text style={styles.successBtnSecondaryText}>Retour aux commandes</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Footer buttons */}
       <View style={styles.footer}>
@@ -169,4 +209,28 @@ const styles = StyleSheet.create({
   footerBtnPrimaryText: { color: Colors.textOnDark, fontWeight: '800', fontSize: 15 },
   footerBtnOutline: { borderWidth: 1.5, borderColor: Colors.primary },
   footerBtnOutlineText: { color: Colors.primary, fontWeight: '700', fontSize: 15 },
+
+  successOverlay: { flex: 1, backgroundColor: Colors.overlay, alignItems: 'center', justifyContent: 'center', padding: 28 },
+  successCard: {
+    width: '100%', backgroundColor: Colors.bgCard, borderRadius: 20,
+    padding: 28, alignItems: 'center', gap: 12,
+  },
+  successIcon: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', marginBottom: 4,
+  },
+  successTitle: { fontSize: 22, fontWeight: '900', color: Colors.textPrimary },
+  successRef: { fontSize: 26, fontWeight: '900', color: Colors.primary, letterSpacing: 3 },
+  successTotal: { fontSize: 18, fontWeight: '700', color: Colors.textSecondary },
+  successBtnPrimary: {
+    width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 14, marginTop: 4,
+  },
+  successBtnPrimaryText: { fontSize: 15, fontWeight: '800', color: Colors.textOnDark },
+  successBtnSecondary: {
+    width: '100%', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 12, paddingVertical: 13,
+    borderWidth: 1.5, borderColor: Colors.border,
+  },
+  successBtnSecondaryText: { fontSize: 15, fontWeight: '700', color: Colors.textSecondary },
 });

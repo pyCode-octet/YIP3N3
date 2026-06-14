@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
 import { Button } from '../../components/Button';
 import { FishPrice } from '../../lib/supabase';
+import { editPrice } from '../../lib/api';
 
 export function EditPriceScreen({ navigation, route }: any) {
   const { price } = route.params as { price: FishPrice };
@@ -15,11 +16,16 @@ export function EditPriceScreen({ navigation, route }: any) {
     const val = parseInt(amount, 10);
     if (!val || val <= 0) { Alert.alert('Erreur', 'Saisis un montant valide.'); return; }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 600));
-    setLoading(false);
-    Alert.alert('Succès', `Prix mis à jour : ${val.toLocaleString('fr-FR')} FCFA`, [
-      { text: 'OK', onPress: () => navigation.goBack() },
-    ]);
+    try {
+      await editPrice(price.id, val, price.label ?? '');
+      Alert.alert('Succès', `Prix mis à jour : ${val.toLocaleString('fr-FR')} FCFA`, [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch {
+      Alert.alert('Erreur', 'Impossible de modifier le prix. Réessaie.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

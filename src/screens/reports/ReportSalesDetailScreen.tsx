@@ -1,9 +1,10 @@
-import React from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Share, Alert } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
-import { mockOrders } from '../../lib/mockData';
 import { Order } from '../../lib/supabase';
+import { fetchTerminatedOrdersByRange, getDateRange } from '../../lib/api';
+import { exportSalesReportPdf } from '../../lib/pdf';
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('fr-FR', {
@@ -12,36 +13,34 @@ function formatDate(iso: string) {
   });
 }
 
-export function ReportSalesDetailScreen({ navigation }: any) {
-  const terminated = mockOrders.filter(o => o.status === 'terminee');
-  const grandTotal = terminated.reduce((s, o) => s + o.total_amount, 0);
+export function ReportSalesDetailScreen({ navigation, route }: any) {
+  const { period = "Aujourd'hui", startDate, endDate } = route.params ?? {};
+
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    const range = startDate && endDate
+      ? { start: new Date(startDate), end: new Date(endDate) }
+      : getDateRange(period);
+    fetchTerminatedOrdersByRange(range.start, range.end)
+      .then(setOrders)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const grandTotal = orders.reduce((s, o) => s + o.total_amount, 0);
 
   const handleDownload = async () => {
+    if (orders.length === 0) { Alert.alert('Aucune donnée', 'Aucune commande sur cette période.'); return; }
+    setExporting(true);
     try {
-      const header = ['Référence', 'Date', 'Qté', 'Total (FCFA)'].join(' | ');
-      const separator = '─'.repeat(60);
-      const rows = terminated.map(o => {
-        const qty = (o.items ?? []).reduce((s, i) => s + i.quantity, 0);
-        return [
-          o.reference.padEnd(10),
-          formatDate(o.created_at).padEnd(18),
-          String(qty).padStart(3),
-          o.total_amount.toLocaleString('fr-FR').padStart(10),
-        ].join(' | ');
-      });
-      const content = [
-        'DÉTAIL DES VENTES — YIPƐNƐ',
-        separator,
-        header,
-        separator,
-        ...rows,
-        separator,
-        `TOTAL : ${grandTotal.toLocaleString('fr-FR')} FCFA`,
-      ].join('\n');
-
-      await Share.share({ message: content, title: 'Détail des ventes YIPƐNƐ' });
+      await exportSalesReportPdf(orders, period);
     } catch {
-      Alert.alert('Erreur', 'Impossible de partager le rapport.');
+      Alert.alert('Erreur', 'Impossible de générer le PDF. Réessaie.');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -62,12 +61,11 @@ export function ReportSalesDetailScreen({ navigation }: any) {
           <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Détail des ventes</Text>
-        <TouchableOpacity style={styles.downloadBtn} onPress={handleDownload} activeOpacity={0.8}>
+        <TouchableOpacity style={styles.downloadBtn} onPress={handleDownload} activeOpacity={0.8} disabled={exporting}>
           <Ionicons name="share-outline" size={20} color={Colors.primary} />
         </TouchableOpacity>
       </View>
 
-      {/* Table header */}
       <View style={styles.tableHeader}>
         <Text style={[styles.col, { flex: 2 }]}>Date</Text>
         <Text style={styles.col}>Réf.</Text>
@@ -76,25 +74,35 @@ export function ReportSalesDetailScreen({ navigation }: any) {
         <Text style={[styles.col, { color: Colors.primary }]}>Total</Text>
       </View>
 
-      <FlatList
-        data={terminated}
-        keyExtractor={o => o.id}
-        renderItem={renderItem}
-        contentContainerStyle={styles.list}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        ListFooterComponent={() => (
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>TOTAL</Text>
-            <Text style={styles.totalValue}>{grandTotal.toLocaleString('fr-FR')} FCFA</Text>
-          </View>
-        )}
-      />
+      {loading ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
+      ) : (
+        <FlatList
+          data={orders}
+          keyExtractor={o => o.id}
+          renderItem={renderItem}
+          contentContainerStyle={styles.list}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          ListEmptyComponent={() => (
+            <Text style={{ color: Colors.textMuted, textAlign: 'center', padding: 40 }}>
+              Aucune vente sur cette période
+            </Text>
+          )}
+          ListFooterComponent={orders.length > 0 ? () => (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>TOTAL</Text>
+              <Text style={styles.totalValue}>{grandTotal.toLocaleString('fr-FR')} FCFA</Text>
+            </View>
+          ) : null}
+        />
+      )}
 
-      {/* Bouton télécharger sticky en bas */}
       <View style={styles.footer}>
-        <TouchableOpacity style={styles.footerBtn} onPress={handleDownload} activeOpacity={0.85}>
-          <Ionicons name="download-outline" size={18} color={Colors.textOnDark} />
-          <Text style={styles.footerBtnText}>Télécharger / Partager</Text>
+        <TouchableOpacity style={[styles.footerBtn, exporting && { opacity: 0.6 }]} onPress={handleDownload} activeOpacity={0.85} disabled={exporting}>
+          <Ionicons name="document-outline" size={18} color={Colors.textOnDark} />
+          <Text style={styles.footerBtnText}>{exporting ? 'Génération PDF...' : 'Télécharger PDF'}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -116,7 +124,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: Colors.primary + '40',
   },
-
   tableHeader: {
     flexDirection: 'row', backgroundColor: Colors.bgCard,
     paddingHorizontal: 16, paddingVertical: 10,
@@ -134,7 +141,6 @@ const styles = StyleSheet.create({
   rowPrice: { flex: 1, fontSize: 11, color: Colors.textSecondary, textAlign: 'center' },
   rowTotal: { flex: 1, fontSize: 13, fontWeight: '700', color: Colors.primary, textAlign: 'right' },
   separator: { height: 1, backgroundColor: Colors.separator },
-
   totalRow: {
     flexDirection: 'row', justifyContent: 'space-between',
     padding: 16, borderTopWidth: 2, borderTopColor: Colors.border,
@@ -142,7 +148,6 @@ const styles = StyleSheet.create({
   },
   totalLabel: { fontSize: 15, fontWeight: '800', color: Colors.textPrimary },
   totalValue: { fontSize: 18, fontWeight: '900', color: Colors.primary },
-
   footer: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     padding: 16, paddingBottom: 28,

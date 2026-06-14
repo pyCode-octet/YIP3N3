@@ -1,12 +1,29 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
 import { FishPrice } from '../../lib/supabase';
-import { mockPrices } from '../../lib/mockData';
+import { fetchPrices } from '../../lib/api';
 
 export function PriceListScreen({ navigation }: any) {
-  const [prices, setPrices] = useState<FishPrice[]>(mockPrices);
+  const [prices, setPrices] = useState<FishPrice[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadPrices = async () => {
+    try {
+      const data = await fetchPrices();
+      setPrices(data);
+    } catch {}
+  };
+
+  useFocusEffect(useCallback(() => { loadPrices(); }, []));
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadPrices();
+    setRefreshing(false);
+  };
 
   return (
     <View style={styles.container}>
@@ -20,7 +37,10 @@ export function PriceListScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.list}>
+      <ScrollView
+        contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+      >
         <Text style={styles.hint}>Les prix actifs sont disponibles pour les nouvelles commandes.</Text>
 
         {prices.map(price => (

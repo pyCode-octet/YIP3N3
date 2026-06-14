@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Modal, Image, Animated,
@@ -6,7 +7,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
-import { mockOrders } from '../../lib/mockData';
+import { fetchOrders } from '../../lib/api';
+import { Order } from '../../lib/supabase';
 import { ColorPalette } from '../../theme/colors';
 
 const LOGO = require('../../../assets/logo_poisson.png');
@@ -14,21 +16,50 @@ const SPARK = [8, 14, 10, 20, 16, 28, 22, 36, 30, 48, 40, 60];
 const SPARK_MAX = Math.max(...SPARK);
 const PANEL_W = 260;
 
+const SIDE_LABEL: Record<string, string> = {
+  attieke_s: '500 FCFA', attieke_m: '1 000 FCFA', attieke_l: '1 500 FCFA',
+  frites_m: '1 000 FCFA', frites_l: '1 500 FCFA',
+};
+
 export function DashboardScreen({ navigation }: any) {
   const { user, logout } = useAuth();
   const { colors: c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
 
+  const [orders, setOrders] = useState<Order[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const slideAnim = useRef(new Animated.Value(-PANEL_W)).current;
   const isPatron = user?.role === 'patron';
 
-  const enCours = mockOrders.filter(o => o.status === 'en_cours');
-  const terminees = mockOrders.filter(o => o.status === 'terminee');
-  const gainJour = terminees.reduce((s, o) => s + o.total_amount, 0);
+  const loadOrders = async () => {
+    try {
+      const data = await fetchOrders();
+      setOrders(data);
+    } catch {}
+  };
 
-  const recent = [...mockOrders]
+  useFocusEffect(useCallback(() => { loadOrders(); }, []));
+
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const enCours = orders.filter(o => o.status === 'en_cours');
+  const terminees = orders.filter(o => o.status === 'terminee');
+  const termineesAuj = terminees.filter(o => new Date(o.created_at) >= todayStart);
+  const gainJour = termineesAuj.reduce((s, o) => s + o.total_amount, 0);
+
+  const allItemsAuj = termineesAuj.flatMap(o => o.items ?? []);
+  const fishByPrice: Record<number, number> = {};
+  for (const it of allItemsAuj)
+    fishByPrice[it.unit_price] = (fishByPrice[it.unit_price] ?? 0) + it.quantity;
+  const sideCount: Record<string, number> = {};
+  for (const it of allItemsAuj)
+    for (const p of (it.accompaniment_id ?? '').split('+').filter(s => s && s !== 'none'))
+      sideCount[p] = (sideCount[p] ?? 0) + it.quantity;
+  const fishEntries = Object.entries(fishByPrice).sort((a, b) => +a[0] - +b[0]);
+  const attiekeEntries = Object.entries(sideCount).filter(([k]) => k.startsWith('attieke')).sort();
+  const fritesEntries  = Object.entries(sideCount).filter(([k]) => k.startsWith('frites')).sort();
+
+  const recent = [...orders]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 10);
 
@@ -48,9 +79,10 @@ export function DashboardScreen({ navigation }: any) {
       .start(() => { setShowMenu(false); cb?.(); });
   };
 
-  const onRefresh = () => {
+  const onRefresh = async () => {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 1000);
+    await loadOrders();
+    setRefreshing(false);
   };
 
   return (
@@ -104,8 +136,8 @@ export function DashboardScreen({ navigation }: any) {
           </View>
           <View style={[styles.statBox, { borderLeftColor: c.primary }]}>
             <Ionicons name="checkmark-circle-outline" size={18} color={c.primary} />
-            <Text style={styles.statLabel}>Commandes{'\n'}terminées</Text>
-            <Text style={[styles.statValue, { color: c.primary }]}>{terminees.length}</Text>
+            <Text style={styles.statLabel}>Terminées{'\n'}aujourd'hui</Text>
+            <Text style={[styles.statValue, { color: c.primary }]}>{termineesAuj.length}</Text>
           </View>
         </View>
 
@@ -114,6 +146,66 @@ export function DashboardScreen({ navigation }: any) {
           <Ionicons name="add" size={20} color={c.textOnDark} />
           <Text style={styles.newOrderBtnText}>Nouvelle commande</Text>
         </TouchableOpacity>
+
+        {/* Résumé du jour */}
+        {termineesAuj.length > 0 && (() => {
+          const fishMax = Math.max(1, ...fishEntries.map(([, v]) => v));
+          const attMax  = Math.max(1, ...attiekeEntries.map(([, v]) => v));
+          const friMax  = Math.max(1, ...fritesEntries.map(([, v]) => v));
+          return (
+            <View style={styles.breakdownCard}>
+              <Text style={styles.breakdownTitle}>Résumé du jour</Text>
+
+              {fishEntries.length > 0 && (
+                <View style={styles.breakdownGroup}>
+                  <Text style={styles.breakdownSection}>Poissons vendus</Text>
+                  {fishEntries.map(([price, qty]) => (
+                    <View key={price} style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>{Number(price).toLocaleString('fr-FR')} F</Text>
+                      <View style={styles.barBg}>
+                        <View style={{ flex: qty, backgroundColor: c.primary, height: 6, borderRadius: 3 }} />
+                        <View style={{ flex: fishMax - qty }} />
+                      </View>
+                      <Text style={styles.breakdownQty}>{qty}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {attiekeEntries.length > 0 && (
+                <View style={styles.breakdownGroup}>
+                  <Text style={styles.breakdownSection}>Attièké</Text>
+                  {attiekeEntries.map(([key, qty]) => (
+                    <View key={key} style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>{SIDE_LABEL[key]}</Text>
+                      <View style={styles.barBg}>
+                        <View style={{ flex: qty, backgroundColor: '#16a34a', height: 6, borderRadius: 3 }} />
+                        <View style={{ flex: attMax - qty }} />
+                      </View>
+                      <Text style={styles.breakdownQty}>{qty}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {fritesEntries.length > 0 && (
+                <View style={styles.breakdownGroup}>
+                  <Text style={styles.breakdownSection}>Frites</Text>
+                  {fritesEntries.map(([key, qty]) => (
+                    <View key={key} style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>{SIDE_LABEL[key]}</Text>
+                      <View style={styles.barBg}>
+                        <View style={{ flex: qty, backgroundColor: '#ea580c', height: 6, borderRadius: 3 }} />
+                        <View style={{ flex: friMax - qty }} />
+                      </View>
+                      <Text style={styles.breakdownQty}>{qty}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+          );
+        })()}
 
         {/* Dernières commandes */}
         <View style={styles.sectionRow}>
@@ -264,6 +356,24 @@ function makeStyles(c: ColorPalette) {
     badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 20 },
     badgeText: { fontSize: 9, fontWeight: '700' },
     emptyText: { color: c.textMuted, fontSize: 14, textAlign: 'center', paddingVertical: 20 },
+
+    breakdownCard: {
+      backgroundColor: c.bgCard, borderRadius: 14, padding: 16,
+      borderWidth: 1, borderColor: c.border, gap: 12,
+    },
+    breakdownTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+    breakdownGroup: { gap: 6 },
+    breakdownSection: {
+      fontSize: 10, fontWeight: '700', color: c.textMuted,
+      textTransform: 'uppercase', letterSpacing: 0.8,
+    },
+    breakdownRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    breakdownLabel: { fontSize: 12, color: c.textPrimary, width: 90 },
+    barBg: {
+      flex: 1, height: 6, borderRadius: 3, overflow: 'hidden',
+      backgroundColor: c.separator, flexDirection: 'row',
+    },
+    breakdownQty: { fontSize: 14, fontWeight: '900', color: c.textPrimary, width: 22, textAlign: 'right' },
 
     menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-start' },
     menuPanel: {

@@ -1,98 +1,145 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  TextInput, Modal,
+  TextInput, Modal, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../theme/colors';
-import { mockPrices } from '../../lib/mockData';
-import { FishPrice } from '../../lib/supabase';
+import { FishPrice, Order } from '../../lib/supabase';
+import { fetchPrices, createOrder } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 
-type OrderLine = {
+// Attièké options (independent of frites)
+const ATTIEKE = [
+  { id: 'none',      label: 'Sans',   price: 0    },
+  { id: 'attieke_s', label: '500',    price: 500  },
+  { id: 'attieke_m', label: '1 000',  price: 1000 },
+  { id: 'attieke_l', label: '1 500',  price: 1500 },
+] as const;
+
+// Frites options (independent of attièké)
+const FRITES = [
+  { id: 'none',     label: 'Sans',   price: 0    },
+  { id: 'frites_m', label: '1 000',  price: 1000 },
+  { id: 'frites_l', label: '1 500',  price: 1500 },
+] as const;
+
+type AttriekeId = typeof ATTIEKE[number]['id'];
+type FritesId   = typeof FRITES[number]['id'];
+
+type CartItem = {
+  cartId: string;
   priceId: string;
   unitPrice: number;
   quantity: number;
+  attriekeId: AttriekeId;
+  attriekePrice: number;
+  fritesId: FritesId;
+  fritesPrice: number;
+  withMayo: boolean;
+  notes: string;
+  accompanimentId: string;
   lineTotal: number;
 };
 
-function genRef() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
-}
+function genId()  { return Math.random().toString(36).substring(2, 10); }
+function genRef() { return Math.random().toString(36).substring(2, 8).toUpperCase(); }
 
 export function NewOrderScreen({ navigation }: any) {
   const { user } = useAuth();
-  const activePrices = mockPrices.filter(p => p.active);
-
-  const [selectedPrice, setSelectedPrice] = useState<FishPrice>(activePrices[0]);
-  const [quantity, setQuantity] = useState(1);
-  const [showPicker, setShowPicker] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(true);
-  const [lines, setLines] = useState<OrderLine[]>([]);
+  const [prices, setPrices] = useState<FishPrice[]>([]);
+  const [cart, setCart] = useState<CartItem[]>([]);
   const [phone, setPhone] = useState('');
   const [mode, setMode] = useState<'sur_place' | 'a_emporter'>('sur_place');
+  const [submitting, setSubmitting] = useState(false);
+  const [successOrder, setSuccessOrder] = useState<Order | null>(null);
 
-  const total = lines.reduce((s, l) => s + l.lineTotal, 0);
+  // Modal state
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedPrice, setSelectedPrice] = useState<FishPrice | null>(null);
+  const [qty, setQty] = useState(1);
+  const [attriekeId, setAttriekeId] = useState<AttriekeId>('none');
+  const [fritesId, setFritesId] = useState<FritesId>('none');
+  const [withMayo, setWithMayo] = useState(true);
 
-  const handleValider = () => {
+  useEffect(() => {
+    fetchPrices().then(all => setPrices(all.filter(p => p.active))).catch(() => {});
+  }, []);
+
+  const total = cart.reduce((s, i) => s + i.lineTotal, 0);
+
+  const openModal = (price: FishPrice) => {
+    setSelectedPrice(price);
+    setQty(1);
+    setAttriekeId('none');
+    setFritesId('none');
+    setWithMayo(true);
+    setModalVisible(true);
+  };
+
+  // Computed totals in the modal
+  const attriekePrice = ATTIEKE.find(a => a.id === attriekeId)!.price;
+  const fritesPrice   = FRITES.find(f => f.id === fritesId)!.price;
+  const modalTotal    = selectedPrice ? (selectedPrice.amount + attriekePrice + fritesPrice) * qty : 0;
+
+  const handleAddToCart = () => {
     if (!selectedPrice) return;
-    const idx = lines.findIndex(l => l.priceId === selectedPrice.id);
-    if (idx >= 0) {
-      setLines(lines.map((l, i) =>
-        i === idx
-          ? { ...l, quantity: l.quantity + quantity, lineTotal: l.unitPrice * (l.quantity + quantity) }
-          : l
-      ));
-    } else {
-      setLines(prev => [...prev, {
-        priceId: selectedPrice.id,
-        unitPrice: selectedPrice.amount,
-        quantity,
-        lineTotal: selectedPrice.amount * quantity,
-      }]);
+
+    // Build human-readable notes
+    const parts: string[] = [];
+    if (attriekeId !== 'none') parts.push(`Attièké ${attriekePrice} FCFA`);
+    if (fritesId !== 'none')   parts.push(`Frites ${fritesPrice} FCFA`);
+    const sideText = parts.length > 0 ? parts.join(' + ') : 'Sans accompagnement';
+    const notes    = `${sideText} · ${withMayo ? 'Avec mayo' : 'Sans mayo'}`;
+
+    // Combined DB key (e.g. "attieke_m+frites_m" or "attieke_m" or "none")
+    const accompParts = [
+      attriekeId !== 'none' ? attriekeId : '',
+      fritesId   !== 'none' ? fritesId   : '',
+    ].filter(Boolean);
+    const accompanimentId = accompParts.length > 0 ? accompParts.join('+') : 'none';
+
+    const lineTotal = (selectedPrice.amount + attriekePrice + fritesPrice) * qty;
+
+    setCart(prev => [...prev, {
+      cartId: genId(),
+      priceId: selectedPrice.id,
+      unitPrice: selectedPrice.amount,
+      quantity: qty,
+      attriekeId,
+      attriekePrice,
+      fritesId,
+      fritesPrice,
+      withMayo,
+      notes,
+      accompanimentId,
+      lineTotal,
+    }]);
+    setModalVisible(false);
+  };
+
+  const handleConfirm = async () => {
+    if (cart.length === 0 || !user) return;
+    setSubmitting(true);
+    try {
+      const order = await createOrder(
+        user.id, genRef(), mode, total, phone || undefined,
+        cart.map(i => ({
+          fish_price_id:    i.priceId,
+          quantity:         i.quantity,
+          unit_price:       i.unitPrice,
+          line_total:       i.lineTotal,
+          notes:            i.notes,
+          accompaniment_id: i.accompanimentId,
+          with_mayo:        i.withMayo,
+        }))
+      );
+      setSuccessOrder(order);
+    } catch (e: any) {
+      Alert.alert('Erreur', e?.message ?? 'Impossible de créer la commande.');
+    } finally {
+      setSubmitting(false);
     }
-    setQuantity(1);
-    setShowAddForm(false);
-  };
-
-  const handleRemoveLine = (idx: number) => {
-    const updated = lines.filter((_, i) => i !== idx);
-    setLines(updated);
-    if (updated.length === 0) setShowAddForm(true);
-  };
-
-  const handleReset = () => {
-    setLines([]);
-    setPhone('');
-    setMode('sur_place');
-    setQuantity(1);
-    setSelectedPrice(activePrices[0]);
-    setShowAddForm(true);
-  };
-
-  const handleCreate = () => {
-    if (lines.length === 0) return;
-    navigation.navigate('OrderSuccess', {
-      order: {
-        id: Date.now().toString(),
-        reference: genRef(),
-        server_id: user?.id ?? '2',
-        server_name: user?.full_name ?? '',
-        client_phone: phone || undefined,
-        mode,
-        status: 'en_cours',
-        total_amount: total,
-        created_at: new Date().toISOString(),
-        items: lines.map((l, i) => ({
-          id: i.toString(),
-          order_id: '0',
-          fish_price_id: l.priceId,
-          quantity: l.quantity,
-          unit_price: l.unitPrice,
-          line_total: l.lineTotal,
-        })),
-      },
-    });
   };
 
   return (
@@ -103,191 +150,217 @@ export function NewOrderScreen({ navigation }: any) {
           <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Nouvelle commande</Text>
-        <TouchableOpacity onPress={handleReset}>
-          <Ionicons name="trash-outline" size={22} color={Colors.textSecondary} />
+        <TouchableOpacity onPress={() => setCart([])} disabled={cart.length === 0}>
+          <Ionicons name="trash-outline" size={22} color={cart.length > 0 ? Colors.error : Colors.textMuted} />
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* ── Formulaire ajout produit (si pas encore de lignes) ── */}
-        {showAddForm && lines.length === 0 && (
-          <View style={styles.addCard}>
-            <Text style={styles.sectionTitle}>Ajouter des produits</Text>
-            <View style={styles.addRow}>
-              <View style={styles.colPrice}>
-                <Text style={styles.addLabel}>Prix du poisson</Text>
-                <TouchableOpacity style={styles.dropdown} onPress={() => setShowPicker(true)}>
-                  <Text style={styles.dropdownText}>
-                    {selectedPrice?.amount.toLocaleString('fr-FR')} FCFA
-                  </Text>
-                  <Ionicons name="chevron-down" size={13} color={Colors.textSecondary} />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.colQty}>
-                <Text style={styles.addLabel}>Quantité</Text>
-                <View style={styles.stepper}>
-                  <TouchableOpacity style={styles.stepBtn} onPress={() => setQuantity(q => Math.max(1, q - 1))}>
-                    <Ionicons name="remove" size={15} color={Colors.textPrimary} />
-                  </TouchableOpacity>
-                  <Text style={styles.stepVal}>{quantity}</Text>
-                  <TouchableOpacity style={styles.stepBtn} onPress={() => setQuantity(q => q + 1)}>
-                    <Ionicons name="add" size={15} color={Colors.textPrimary} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-              <TouchableOpacity style={styles.validerBtn} onPress={handleValider}>
-                <Text style={styles.validerBtnText}>Valider</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
 
-        {/* ── Lignes de commande ── */}
-        {lines.length > 0 && (
-          <View style={styles.linesCard}>
-            <Text style={styles.sectionTitle}>Lignes de commande</Text>
-            {lines.map((line, i) => (
-              <View key={i} style={[styles.lineRow, i > 0 && styles.lineRowBorder]}>
-                <View style={styles.lineLeft}>
-                  <Text style={styles.linePrice}>{line.unitPrice.toLocaleString('fr-FR')} FCFA</Text>
-                  <Text style={styles.lineQty}> × {line.quantity}</Text>
+        {/* Mode toggle */}
+        <View style={styles.modeRow}>
+          {(['sur_place', 'a_emporter'] as const).map(m => (
+            <TouchableOpacity
+              key={m}
+              style={[styles.modeBtn, mode === m && styles.modeBtnActive]}
+              onPress={() => setMode(m)}
+            >
+              <Ionicons
+                name={m === 'sur_place' ? 'restaurant-outline' : 'bag-outline'}
+                size={16}
+                color={mode === m ? Colors.primary : Colors.textMuted}
+              />
+              <Text style={[styles.modeBtnText, mode === m && styles.modeBtnTextActive]}>
+                {m === 'sur_place' ? 'Sur place' : 'À emporter'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Fish price tiles */}
+        <View>
+          <Text style={styles.sectionLabel}>CHOISIR UN POISSON</Text>
+          <Text style={styles.sectionHint}>Appuie sur plusieurs tuiles pour des poissons différents</Text>
+          <View style={styles.priceGrid}>
+            {prices.map(p => (
+              <TouchableOpacity key={p.id} style={styles.priceTile} onPress={() => openModal(p)} activeOpacity={0.7}>
+                <Text style={styles.priceTileEmoji}>🐟</Text>
+                <Text style={styles.priceTileAmount}>{p.amount.toLocaleString('fr-FR')}</Text>
+                <Text style={styles.priceTileFcfa}>FCFA</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* Cart */}
+        {cart.length > 0 && (
+          <View style={styles.cartSection}>
+            <View style={styles.cartHeader}>
+              <Text style={styles.sectionLabel}>PANIER</Text>
+              <Text style={styles.cartBadge}>{cart.length} article{cart.length > 1 ? 's' : ''}</Text>
+            </View>
+            {cart.map((item, idx) => (
+              <View key={item.cartId} style={[styles.cartRow, idx > 0 && styles.cartRowBorder]}>
+                <View style={styles.cartRowLeft}>
+                  <Text style={styles.cartRowTitle}>
+                    🐟 {item.unitPrice.toLocaleString('fr-FR')} FCFA{item.quantity > 1 ? ` × ${item.quantity}` : ''}
+                  </Text>
+                  <Text style={styles.cartRowNotes}>{item.notes}</Text>
                 </View>
-                <View style={styles.lineRight}>
-                  <Text style={styles.lineTotal}>{line.lineTotal.toLocaleString('fr-FR')} FCFA</Text>
-                  <TouchableOpacity style={styles.trashBtn} onPress={() => handleRemoveLine(i)}>
-                    <Ionicons name="trash-outline" size={17} color={Colors.error} />
+                <View style={styles.cartRowRight}>
+                  <Text style={styles.cartRowTotal}>{item.lineTotal.toLocaleString('fr-FR')}</Text>
+                  <TouchableOpacity onPress={() => setCart(prev => prev.filter(i => i.cartId !== item.cartId))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="close-circle" size={20} color={Colors.error} />
                   </TouchableOpacity>
                 </View>
               </View>
             ))}
-          </View>
-        )}
-
-        {/* ── Ajouter produit — entre les lignes et le total ── */}
-        {lines.length > 0 && (
-          showAddForm ? (
-            <View style={styles.addCard}>
-              <View style={styles.addRow}>
-                <View style={styles.colPrice}>
-                  <Text style={styles.addLabel}>Prix du poisson</Text>
-                  <TouchableOpacity style={styles.dropdown} onPress={() => setShowPicker(true)}>
-                    <Text style={styles.dropdownText}>
-                      {selectedPrice?.amount.toLocaleString('fr-FR')} FCFA
-                    </Text>
-                    <Ionicons name="chevron-down" size={13} color={Colors.textSecondary} />
-                  </TouchableOpacity>
-                </View>
-                <View style={styles.colQty}>
-                  <Text style={styles.addLabel}>Quantité</Text>
-                  <View style={styles.stepper}>
-                    <TouchableOpacity style={styles.stepBtn} onPress={() => setQuantity(q => Math.max(1, q - 1))}>
-                      <Ionicons name="remove" size={15} color={Colors.textPrimary} />
-                    </TouchableOpacity>
-                    <Text style={styles.stepVal}>{quantity}</Text>
-                    <TouchableOpacity style={styles.stepBtn} onPress={() => setQuantity(q => q + 1)}>
-                      <Ionicons name="add" size={15} color={Colors.textPrimary} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                <TouchableOpacity style={styles.validerBtn} onPress={handleValider}>
-                  <Text style={styles.validerBtnText}>Valider</Text>
-                </TouchableOpacity>
-              </View>
+            <View style={styles.cartTotal}>
+              <Text style={styles.cartTotalLabel}>TOTAL</Text>
+              <Text style={styles.cartTotalValue}>{total.toLocaleString('fr-FR')} FCFA</Text>
             </View>
-          ) : (
-            <TouchableOpacity style={styles.addAnotherBlock} onPress={() => setShowAddForm(true)} activeOpacity={0.85}>
-              <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
-              <Text style={styles.addAnotherBlockText}>Ajouter un autre poisson</Text>
-            </TouchableOpacity>
-          )
-        )}
-
-        {/* ── Total ── */}
-        {lines.length > 0 && (
-          <View style={styles.totalCard}>
-            <Text style={styles.totalLabel}>TOTAL</Text>
-            <Text style={styles.totalValue}>{total.toLocaleString('fr-FR')} FCFA</Text>
           </View>
         )}
 
-        {/* ── Numéro de dépôt client ── */}
-        <Text style={styles.sectionTitle}>Numéro de dépôt client (optionnel)</Text>
-        <View style={styles.inputCard}>
-          <Text style={styles.inputLabel}>Numéro</Text>
+        {/* Phone */}
+        <View style={styles.phoneCard}>
+          <Ionicons name="call-outline" size={16} color={Colors.textMuted} />
           <TextInput
-            style={styles.input}
+            style={styles.phoneInput}
             value={phone}
             onChangeText={setPhone}
-            placeholder="Ex : DEP-001"
-            keyboardType="default"
+            placeholder="Numéro client (optionnel)"
             placeholderTextColor={Colors.textMuted}
           />
         </View>
 
-        {/* ── Mode de commande ── */}
-        <Text style={styles.sectionTitle}>Mode de commande</Text>
-        <View style={styles.modeRow}>
-          <TouchableOpacity
-            style={[styles.modeBtn, mode === 'sur_place' && styles.modeBtnActive]}
-            onPress={() => setMode('sur_place')}
-          >
-            <Text style={[styles.modeBtnText, mode === 'sur_place' && styles.modeBtnTextActive]}>
-              Sur place
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.modeBtn, mode === 'a_emporter' && styles.modeBtnActive]}
-            onPress={() => setMode('a_emporter')}
-          >
-            <Text style={[styles.modeBtnText, mode === 'a_emporter' && styles.modeBtnTextActive]}>
-              À emporter
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ── Créer la commande ── */}
+        {/* Confirm */}
         <TouchableOpacity
-          style={[styles.createBtn, lines.length === 0 && styles.createBtnDisabled]}
-          onPress={handleCreate}
-          disabled={lines.length === 0}
+          style={[styles.confirmBtn, (cart.length === 0 || submitting) && styles.confirmBtnDisabled]}
+          onPress={handleConfirm}
+          disabled={cart.length === 0 || submitting}
           activeOpacity={0.85}
         >
-          <Text style={styles.createBtnText}>Créer la commande</Text>
+          <Ionicons name="checkmark-circle-outline" size={20} color={Colors.textOnDark} />
+          <Text style={styles.confirmBtnText}>
+            {submitting ? 'Création...' : `Confirmer · ${total.toLocaleString('fr-FR')} FCFA`}
+          </Text>
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Price picker modal */}
-      <Modal visible={showPicker} transparent animationType="fade">
-        <TouchableOpacity
-          style={styles.overlay}
-          onPress={() => setShowPicker(false)}
-          activeOpacity={1}
-        >
-          <View style={styles.pickerBox}>
-            <Text style={styles.pickerTitle}>Prix du poisson</Text>
-            {activePrices.map(p => (
-              <TouchableOpacity
-                key={p.id}
-                style={[styles.pickerItem, selectedPrice?.id === p.id && styles.pickerItemActive]}
-                onPress={() => { setSelectedPrice(p); setShowPicker(false); }}
-              >
-                <Text style={[
-                  styles.pickerItemText,
-                  selectedPrice?.id === p.id && styles.pickerItemTextActive,
-                ]}>
-                  {p.amount.toLocaleString('fr-FR')} FCFA
-                </Text>
-                {selectedPrice?.id === p.id && (
-                  <Ionicons name="checkmark" size={18} color={Colors.primary} />
-                )}
-              </TouchableOpacity>
-            ))}
+      {/* Success modal */}
+      <Modal visible={!!successOrder} transparent animationType="fade">
+        <View style={styles.successOverlay}>
+          <View style={styles.successCard}>
+            <View style={styles.successIcon}>
+              <Ionicons name="checkmark" size={44} color={Colors.textOnDark} />
+            </View>
+            <Text style={styles.successTitle}>Commande créée !</Text>
+            <Text style={styles.successRef}>{successOrder?.reference}</Text>
+            <Text style={styles.successTotal}>{successOrder?.total_amount.toLocaleString('fr-FR')} FCFA</Text>
+            <TouchableOpacity
+              style={styles.successBtnPrimary}
+              onPress={() => { const o = successOrder; setSuccessOrder(null); navigation.navigate('Receipt', { order: o }); }}
+            >
+              <Ionicons name="document-text-outline" size={17} color={Colors.textOnDark} />
+              <Text style={styles.successBtnPrimaryText}>Voir le reçu</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.successBtnSecondary}
+              onPress={() => { setSuccessOrder(null); setCart([]); setPhone(''); }}
+            >
+              <Text style={styles.successBtnSecondaryText}>Nouvelle commande</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.successBtnSecondary, { borderTopWidth: 0, marginTop: -8 }]}
+              onPress={() => {
+                setSuccessOrder(null);
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: 'Tabs', params: { screen: 'Dashboard' } }],
+                });
+              }}
+            >
+              <Text style={styles.successBtnSecondaryText}>Retour au Dashboard</Text>
+            </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+        </View>
+      </Modal>
+
+      {/* Bottom sheet — item configurator */}
+      <Modal visible={modalVisible} transparent animationType="slide">
+        <View style={styles.sheetOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setModalVisible(false)} activeOpacity={1} />
+          <View style={styles.sheet}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Poisson {selectedPrice?.amount.toLocaleString('fr-FR')} FCFA</Text>
+
+            {/* Quantity */}
+            <Text style={styles.sheetLabel}>QUANTITÉ</Text>
+            <View style={styles.qtyRow}>
+              <TouchableOpacity style={styles.qtyBtn} onPress={() => setQty(q => Math.max(1, q - 1))}>
+                <Ionicons name="remove" size={22} color={Colors.textPrimary} />
+              </TouchableOpacity>
+              <Text style={styles.qtyVal}>{qty}</Text>
+              <TouchableOpacity style={styles.qtyBtn} onPress={() => setQty(q => q + 1)}>
+                <Ionicons name="add" size={22} color={Colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Attièké — independent row */}
+            <Text style={styles.sheetLabel}>ATTIÈKÉ</Text>
+            <View style={styles.sideRow}>
+              {ATTIEKE.map(a => (
+                <TouchableOpacity
+                  key={a.id}
+                  style={[styles.sideBtn, attriekeId === a.id && styles.sideBtnActive]}
+                  onPress={() => setAttriekeId(a.id)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.sideBtnLabel, attriekeId === a.id && styles.sideBtnLabelActive]}>{a.label}</Text>
+                  {a.price > 0 && (
+                    <Text style={[styles.sideBtnSub, attriekeId === a.id && styles.sideBtnSubActive]}>FCFA</Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Frites — independent row */}
+            <Text style={styles.sheetLabel}>FRITES</Text>
+            <View style={styles.sideRow}>
+              {FRITES.map(f => (
+                <TouchableOpacity
+                  key={f.id}
+                  style={[styles.sideBtn, fritesId === f.id && styles.sideBtnActiveFrites]}
+                  onPress={() => setFritesId(f.id)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.sideBtnLabel, fritesId === f.id && styles.sideBtnLabelActiveFrites]}>{f.label}</Text>
+                  {f.price > 0 && (
+                    <Text style={[styles.sideBtnSub, fritesId === f.id && styles.sideBtnSubActiveFrites]}>FCFA</Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Mayo */}
+            <Text style={styles.sheetLabel}>INGRÉDIENTS</Text>
+            <View style={styles.mayoRow}>
+              <TouchableOpacity style={[styles.mayoBtn, withMayo && styles.mayoBtnActive]} onPress={() => setWithMayo(true)} activeOpacity={0.75}>
+                <Text style={[styles.mayoText, withMayo && styles.mayoTextActive]}>Avec mayo</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.mayoBtn, !withMayo && styles.mayoBtnActive]} onPress={() => setWithMayo(false)} activeOpacity={0.75}>
+                <Text style={[styles.mayoText, !withMayo && styles.mayoTextActive]}>Sans mayo</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Add */}
+            <TouchableOpacity style={styles.addBtn} onPress={handleAddToCart} activeOpacity={0.85}>
+              <Ionicons name="add-circle-outline" size={20} color={Colors.textOnDark} />
+              <Text style={styles.addBtnText}>Ajouter · {modalTotal.toLocaleString('fr-FR')} FCFA</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -298,134 +371,124 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 20, paddingTop: 56, paddingBottom: 16,
-    backgroundColor: Colors.bgCard,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
+    backgroundColor: Colors.bgCard, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   headerTitle: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
-  content: { padding: 16, gap: 14, paddingBottom: 40 },
-  sectionTitle: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary, marginBottom: -6 },
+  scroll: { padding: 16, gap: 20, paddingBottom: 48 },
 
-  // Add form card
-  addCard: {
-    backgroundColor: Colors.bgCard, borderRadius: 12,
-    padding: 14, borderWidth: 1, borderColor: Colors.border, gap: 12,
-  },
-  addRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
-
-  colPrice: { flex: 1 },
-  colQty: { width: 96 },
-
-  addLabel: { fontSize: 11, color: Colors.textMuted, marginBottom: 5 },
-  dropdown: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 8,
-    paddingHorizontal: 9, paddingVertical: 9, backgroundColor: Colors.bg,
-  },
-  dropdownText: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
-
-  stepper: {
-    flexDirection: 'row', alignItems: 'center',
-    borderWidth: 1, borderColor: Colors.border, borderRadius: 8,
-    overflow: 'hidden', backgroundColor: Colors.bg,
-  },
-  stepBtn: {
-    width: 30, height: 36, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: Colors.bgCardLight,
-  },
-  stepVal: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary, width: 28, textAlign: 'center' },
-
-  validerBtn: {
-    backgroundColor: Colors.primary, borderRadius: 8,
-    paddingHorizontal: 14, paddingVertical: 9,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  validerBtnText: { color: Colors.textOnDark, fontWeight: '700', fontSize: 13 },
-
-  // "Ajouter un autre poisson" block
-  addAnotherBlock: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: Colors.primaryLight,
-    borderRadius: 12, paddingVertical: 14,
-    borderWidth: 1, borderColor: Colors.primary + '40',
-  },
-  addAnotherBlockText: { fontSize: 14, fontWeight: '700', color: Colors.primary },
-
-  // Lines card
-  linesCard: {
-    backgroundColor: Colors.bgCard, borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 12,
-    borderWidth: 1, borderColor: Colors.border, gap: 0,
-  },
-
-  lineRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 10,
-  },
-  lineRowBorder: { borderTopWidth: 1, borderTopColor: Colors.separator },
-
-  lineLeft: { flexDirection: 'row', alignItems: 'baseline', flex: 1 },
-  linePrice: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
-  lineQty: { fontSize: 13, color: Colors.textSecondary, marginLeft: 4 },
-
-  lineRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  lineTotal: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
-  trashBtn: { padding: 2 },
-
-  totalCard: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: Colors.bgCard, borderRadius: 12,
-    paddingHorizontal: 16, paddingVertical: 14,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  totalLabel: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
-  totalValue: { fontSize: 22, fontWeight: '900', color: Colors.accent },
-
-  // Client info
-  inputCard: {
-    backgroundColor: Colors.bgCard, borderRadius: 12,
-    padding: 14, borderWidth: 1, borderColor: Colors.border,
-  },
-  inputLabel: { fontSize: 11, color: Colors.textMuted, marginBottom: 6 },
-  input: {
-    fontSize: 15, color: Colors.textPrimary,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
-    paddingVertical: 6,
-  },
-
-  // Mode
-  modeRow: { flexDirection: 'row', gap: 12 },
+  modeRow: { flexDirection: 'row', gap: 10 },
   modeBtn: {
-    flex: 1, paddingVertical: 13, borderRadius: 8,
-    borderWidth: 1.5, borderColor: Colors.border,
-    alignItems: 'center', backgroundColor: Colors.bgCard,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 12, borderRadius: 10, borderWidth: 1.5, borderColor: Colors.border, backgroundColor: Colors.bgCard,
   },
   modeBtnActive: { backgroundColor: Colors.primaryLight, borderColor: Colors.primary },
-  modeBtnText: { fontSize: 14, fontWeight: '700', color: Colors.textSecondary },
+  modeBtnText: { fontSize: 14, fontWeight: '700', color: Colors.textMuted },
   modeBtnTextActive: { color: Colors.primary },
 
-  // Create
-  createBtn: {
-    backgroundColor: Colors.primary, borderRadius: 10,
-    paddingVertical: 16, alignItems: 'center',
-  },
-  createBtnDisabled: { backgroundColor: Colors.textMuted },
-  createBtnText: { fontSize: 16, fontWeight: '800', color: Colors.textOnDark },
+  sectionLabel: { fontSize: 11, fontWeight: '800', color: Colors.textMuted, letterSpacing: 1, marginBottom: 4 },
+  sectionHint: { fontSize: 11, color: Colors.textMuted, marginBottom: 10, fontStyle: 'italic' },
 
-  // Modal
-  overlay: {
-    flex: 1, backgroundColor: Colors.overlay,
-    justifyContent: 'center', alignItems: 'center', padding: 24,
+  priceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  priceTile: {
+    width: '30%', flexGrow: 1,
+    backgroundColor: Colors.bgCard, borderRadius: 14,
+    paddingVertical: 20, alignItems: 'center', gap: 4,
+    borderWidth: 1.5, borderColor: Colors.border,
+    elevation: 2,
   },
-  pickerBox: {
-    backgroundColor: Colors.bgCard, borderRadius: 14, padding: 16,
-    width: '100%', gap: 4,
-  },
-  pickerTitle: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary, marginBottom: 8 },
-  pickerItem: {
+  priceTileEmoji: { fontSize: 28 },
+  priceTileAmount: { fontSize: 20, fontWeight: '900', color: Colors.textPrimary },
+  priceTileFcfa: { fontSize: 11, color: Colors.textMuted, fontWeight: '600', letterSpacing: 0.5 },
+
+  cartSection: { backgroundColor: Colors.bgCard, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden' },
+  cartHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 8 },
+  cartBadge: { fontSize: 11, fontWeight: '700', color: Colors.primary, backgroundColor: Colors.primaryLight, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20 },
+  cartRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10 },
+  cartRowBorder: { borderTopWidth: 1, borderTopColor: Colors.separator },
+  cartRowLeft: { flex: 1, gap: 2 },
+  cartRowTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  cartRowNotes: { fontSize: 12, color: Colors.textMuted },
+  cartRowRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  cartRowTotal: { fontSize: 14, fontWeight: '800', color: Colors.textPrimary },
+  cartTotal: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: 13, paddingHorizontal: 12, borderRadius: 8,
+    paddingHorizontal: 14, paddingVertical: 12,
+    borderTopWidth: 2, borderTopColor: Colors.primary + '30', backgroundColor: Colors.primaryLight,
   },
-  pickerItemActive: { backgroundColor: Colors.primaryLight },
-  pickerItemText: { fontSize: 16, color: Colors.textSecondary, fontWeight: '600' },
-  pickerItemTextActive: { color: Colors.primary, fontWeight: '800' },
+  cartTotalLabel: { fontSize: 12, fontWeight: '800', color: Colors.primary, letterSpacing: 1 },
+  cartTotalValue: { fontSize: 20, fontWeight: '900', color: Colors.primary },
+
+  phoneCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: Colors.bgCard, borderRadius: 10,
+    paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: Colors.border,
+  },
+  phoneInput: { flex: 1, fontSize: 15, color: Colors.textPrimary },
+
+  confirmBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 17,
+  },
+  confirmBtnDisabled: { backgroundColor: Colors.textMuted },
+  confirmBtnText: { fontSize: 16, fontWeight: '800', color: Colors.textOnDark },
+
+  sheetOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
+  sheet: { backgroundColor: Colors.bgCard, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 36, gap: 14 },
+  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: 4 },
+  sheetTitle: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary },
+  sheetLabel: { fontSize: 11, fontWeight: '800', color: Colors.textMuted, letterSpacing: 1 },
+
+  qtyRow: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', borderWidth: 1.5, borderColor: Colors.border, borderRadius: 10, overflow: 'hidden' },
+  qtyBtn: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bgCardLight },
+  qtyVal: { width: 52, textAlign: 'center', fontSize: 20, fontWeight: '800', color: Colors.textPrimary },
+
+  // Accompaniment rows (independent: attièké + frites)
+  sideRow: { flexDirection: 'row', gap: 8 },
+  sideBtn: {
+    flex: 1, paddingVertical: 11, borderRadius: 10, alignItems: 'center', gap: 1,
+    borderWidth: 1.5, borderColor: Colors.border, backgroundColor: Colors.bg,
+  },
+  sideBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  sideBtnActiveFrites: { borderColor: Colors.accent, backgroundColor: Colors.orangeLight },
+  sideBtnLabel: { fontSize: 14, fontWeight: '800', color: Colors.textSecondary },
+  sideBtnLabelActive: { color: Colors.primary },
+  sideBtnLabelActiveFrites: { color: Colors.accentDark },
+  sideBtnSub: { fontSize: 9, color: Colors.textMuted },
+  sideBtnSubActive: { color: Colors.primaryDark },
+  sideBtnSubActiveFrites: { color: Colors.accentDark },
+
+  mayoRow: { flexDirection: 'row', gap: 10 },
+  mayoBtn: { flex: 1, paddingVertical: 13, borderRadius: 10, alignItems: 'center', borderWidth: 1.5, borderColor: Colors.border, backgroundColor: Colors.bg },
+  mayoBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
+  mayoText: { fontSize: 14, fontWeight: '700', color: Colors.textSecondary },
+  mayoTextActive: { color: Colors.primary },
+
+  addBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 16 },
+  addBtnText: { fontSize: 16, fontWeight: '800', color: Colors.textOnDark },
+
+  // Success modal
+  successOverlay: { flex: 1, backgroundColor: Colors.overlay, alignItems: 'center', justifyContent: 'center', padding: 28 },
+  successCard: {
+    width: '100%', backgroundColor: Colors.bgCard, borderRadius: 20,
+    padding: 28, alignItems: 'center', gap: 12,
+  },
+  successIcon: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
+    marginBottom: 4,
+  },
+  successTitle: { fontSize: 22, fontWeight: '900', color: Colors.textPrimary },
+  successRef: { fontSize: 26, fontWeight: '900', color: Colors.primary, letterSpacing: 3 },
+  successTotal: { fontSize: 18, fontWeight: '700', color: Colors.textSecondary },
+  successBtnPrimary: {
+    width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 14, marginTop: 4,
+  },
+  successBtnPrimaryText: { fontSize: 15, fontWeight: '800', color: Colors.textOnDark },
+  successBtnSecondary: {
+    width: '100%', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 12, paddingVertical: 13,
+    borderWidth: 1.5, borderColor: Colors.border,
+  },
+  successBtnSecondaryText: { fontSize: 15, fontWeight: '700', color: Colors.textSecondary },
 });

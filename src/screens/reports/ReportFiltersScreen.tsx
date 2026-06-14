@@ -1,12 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../context/ThemeContext';
-import { mockOrders } from '../../lib/mockData';
 import { Order } from '../../lib/supabase';
 import { ColorPalette } from '../../theme/colors';
+import { fetchTerminatedOrdersByRange, getDateRange } from '../../lib/api';
 
 // ── Calendrier ────────────────────────────────────────────────────────────────
 
@@ -162,19 +162,35 @@ export function ReportFiltersScreen({ navigation }: any) {
   const styles = useMemo(() => makeStyles(c), [c]);
 
   const [periodLabel, setPeriodLabel] = useState("Aujourd'hui");
+  const [customStart, setCustomStart] = useState<Date | undefined>(undefined);
+  const [customEnd, setCustomEnd] = useState<Date | undefined>(undefined);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [orders, setOrders] = useState<Order[]>([]);
 
-  const terminated: Order[] = mockOrders.filter(o => o.status === 'terminee');
-  const caTotal = terminated.reduce((s, o) => s + o.total_amount, 0);
-  const nbCommandes = terminated.length;
-  const totalPoissons = terminated.reduce(
+  useEffect(() => {
+    const range = getDateRange(periodLabel, customStart, customEnd);
+    fetchTerminatedOrdersByRange(range.start, range.end)
+      .then(setOrders)
+      .catch(() => {});
+  }, [periodLabel, customStart, customEnd]);
+
+  const caTotal = orders.reduce((s, o) => s + o.total_amount, 0);
+  const nbCommandes = orders.length;
+  const totalPoissons = orders.reduce(
     (sum, o) => sum + (o.items ?? []).reduce((s, item) => s + item.quantity, 0), 0,
   );
 
-  const last10 = [...terminated]
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    .slice(0, 10);
+  const last10 = [...orders].slice(0, 10);
+
+  const navParams = () => {
+    const range = getDateRange(periodLabel, customStart, customEnd);
+    return {
+      period: periodLabel,
+      startDate: range.start.toISOString(),
+      endDate: range.end.toISOString(),
+    };
+  };
 
   return (
     <View style={styles.container}>
@@ -223,7 +239,11 @@ export function ReportFiltersScreen({ navigation }: any) {
             <Text style={[styles.thCell, { flex: 1, textAlign: 'center' }]}>Heure</Text>
             <Text style={[styles.thCell, { flex: 1.4, textAlign: 'right' }]}>Montant</Text>
           </View>
-          {last10.map((o, i) => (
+          {last10.length === 0 ? (
+            <Text style={{ color: c.textMuted, fontSize: 13, textAlign: 'center', padding: 20 }}>
+              Aucune vente sur cette période
+            </Text>
+          ) : last10.map((o, i) => (
             <TouchableOpacity
               key={o.id}
               style={[styles.tableRow, i % 2 === 1 && styles.tableRowAlt]}
@@ -238,7 +258,7 @@ export function ReportFiltersScreen({ navigation }: any) {
           ))}
         </View>
 
-        <TouchableOpacity style={styles.moreBtn} onPress={() => navigation.navigate('ReportSalesDetail')} activeOpacity={0.85}>
+        <TouchableOpacity style={styles.moreBtn} onPress={() => navigation.navigate('ReportSalesDetail', navParams())} activeOpacity={0.85}>
           <Text style={styles.moreBtnText}>Voir plus</Text>
           <Ionicons name="arrow-forward" size={16} color={c.primary} />
         </TouchableOpacity>
@@ -250,7 +270,7 @@ export function ReportFiltersScreen({ navigation }: any) {
           <TouchableOpacity style={StyleSheet.absoluteFillObject} onPress={() => setShowDropdown(false)} activeOpacity={1} />
           <View style={styles.dropdown}>
             {QUICK_FILTERS.map(f => (
-              <TouchableOpacity key={f} style={styles.dropdownItem} onPress={() => { setPeriodLabel(f); setShowDropdown(false); }}>
+              <TouchableOpacity key={f} style={styles.dropdownItem} onPress={() => { setCustomStart(undefined); setCustomEnd(undefined); setPeriodLabel(f); setShowDropdown(false); }}>
                 <Text style={[styles.dropdownItemText, periodLabel === f && styles.dropdownItemTextActive]}>{f}</Text>
                 {periodLabel === f && <Ionicons name="checkmark" size={14} color={c.primary} />}
               </TouchableOpacity>
@@ -267,7 +287,11 @@ export function ReportFiltersScreen({ navigation }: any) {
       <CalendarPicker
         visible={showCalendar}
         onClose={() => setShowCalendar(false)}
-        onConfirm={(label) => setPeriodLabel(label)}
+        onConfirm={(label, start, end) => {
+          setCustomStart(start);
+          setCustomEnd(end);
+          setPeriodLabel(label);
+        }}
       />
     </View>
   );
@@ -327,7 +351,6 @@ function makeStyles(c: ColorPalette) {
       borderWidth: 1, borderColor: c.primary + '40',
     },
     periodBtnText: { fontSize: 13, fontWeight: '700', color: c.primary },
-
     dropdown: {
       position: 'absolute', top: 105, right: 16,
       backgroundColor: c.bgCard, borderRadius: 12,
@@ -343,9 +366,7 @@ function makeStyles(c: ColorPalette) {
     dropdownItemText: { fontSize: 14, fontWeight: '500', color: c.textPrimary },
     dropdownItemTextActive: { color: c.primary, fontWeight: '700' },
     dropdownDivider: { height: 1, backgroundColor: c.separator },
-
     content: { padding: 16, gap: 16, paddingBottom: 40 },
-
     caCard: {
       backgroundColor: c.bgCard, borderRadius: 16,
       paddingHorizontal: 20, paddingVertical: 28, overflow: 'hidden',
@@ -358,7 +379,6 @@ function makeStyles(c: ColorPalette) {
     caLabel: { fontSize: 11, color: c.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
     caValue: { fontSize: 32, fontWeight: '900', color: c.textPrimary, marginTop: 4, marginBottom: 10 },
     caIntroText: { fontSize: 12, color: c.textSecondary, lineHeight: 17, fontStyle: 'italic', maxWidth: '80%' },
-
     statsRow: { flexDirection: 'row', gap: 12 },
     statCard: {
       flex: 1, backgroundColor: c.bgCard, borderRadius: 14,
@@ -369,7 +389,6 @@ function makeStyles(c: ColorPalette) {
     statBgIcon: { position: 'absolute', right: 8, bottom: 6 },
     statValue: { fontSize: 24, fontWeight: '900', color: c.textPrimary },
     statLabel: { fontSize: 11, color: c.textMuted, fontWeight: '600', lineHeight: 15 },
-
     tableOuterTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: -8 },
     tableCard: { backgroundColor: c.bgCard, borderRadius: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
     tableHeader: { flexDirection: 'row', backgroundColor: c.bg, paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.border },
@@ -379,7 +398,6 @@ function makeStyles(c: ColorPalette) {
     tdRef: { fontSize: 12, fontWeight: '800', color: c.textPrimary, letterSpacing: 0.5 },
     tdCell: { fontSize: 11, color: c.textSecondary },
     tdAmount: { fontSize: 12, fontWeight: '700', color: c.primary },
-
     moreBtn: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: 8, paddingVertical: 14,
